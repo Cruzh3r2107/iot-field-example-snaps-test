@@ -2,14 +2,15 @@
 
 # mklog ensures that a log file exists
 mklog() {
+    # FIXME: if mklog() is called within a subshell,
+    #        then LOG_DIR isn't getting globally updated
     _log_dir="${1:-"${LOG_DIR:="$(mktemp -d)"}"}"
 
     [ -d "$_log_dir" ] || mkdir -p "$_log_dir"
 
-    # FIXED: Renamed _log_path to _log_file_path for clarity
-    # This variable points to a .log file, so the name should reflect that
-    _log_file_path="${_log_dir}/$(date -Iseconds | tr ':' '-').log"
-    : >| "$_log_file_path" && echo "$_log_file_path"
+    # TODO: _log_path points to a .log file. This variable seems misnamed
+    _log_path="${_log_dir}/$(date -Iseconds).log"
+    : >| "$_log_path" && echo "$_log_path"
 }
 
 # log to SNAP_COMMON and TTY
@@ -59,119 +60,19 @@ rest_call() {
     esac
 }
 
-# validate_assertion_file checks that assertion contains required components
-# A valid assertion file must contain account-key, snap-declaration, and snap-revision
-validate_assertion_file() {
-    _assert_file="$1"
-    
-    # Check if file exists and is readable
-    [ -r "$_assert_file" ] || {
-        log "ERROR: Cannot read assertion file: $_assert_file"
-        return 1
-    }
-    
-    # Check file is not empty
-    [ -s "$_assert_file" ] || {
-        log "ERROR: Assertion file is empty: $_assert_file"
-        return 1
-    }
-    
-    # Check for required assertion types
-    _has_account_key=false
-    _has_snap_declaration=false  
-    _has_snap_revision=false
-    
-    # Read the file and look for the required assertion types
-    while read -r _line; do
-        case "$_line" in
-            "type: account-key"*)     _has_account_key=true ;;
-            "type: snap-declaration"*) _has_snap_declaration=true ;;
-            "type: snap-revision"*)   _has_snap_revision=true ;;
-        esac
-    done < "$_assert_file"
-    
-    # Verify all three required assertion types are present
-    if ! $_has_account_key; then
-        log "WARN: Assertion file missing account-key: $_assert_file"
-        return 1
-    fi
-    
-    if ! $_has_snap_declaration; then
-        log "WARN: Assertion file missing snap-declaration: $_assert_file"
-        return 1
-    fi
-    
-    if ! $_has_snap_revision; then
-        log "WARN: Assertion file missing snap-revision: $_assert_file"
-        return 1
-    fi
-    
-    log "VALIDATION: Assertion file contains all required types: $_assert_file"
-    return 0
-}
-
-# validate_snap_file performs basic validation on snap files
-# Checks file accessibility, size, and SquashFS format when possible
-validate_snap_file() {
-    _snap_file="$1"
-    
-    # Check if file exists and is readable
-    [ -r "$_snap_file" ] || {
-        log "ERROR: Cannot read snap file: $_snap_file"
-        return 1
-    }
-    
-    # Check if file is not empty
-    [ -s "$_snap_file" ] || {
-        log "ERROR: Snap file is empty: $_snap_file"
-        return 1
-    }
-    
-    # Check file size is reasonable (> 1KB, < 2GB for safety)
-    if command -v stat >/dev/null 2>&1; then
-        _file_size=$(stat -c%s "$_snap_file" 2>/dev/null) || {
-            log "WARN: Cannot determine size of snap file: $_snap_file"
-            # Don't fail here, continue with other checks
-        }
-        
-        if [ -n "$_file_size" ]; then
-            [ "$_file_size" -gt 1024 ] || {
-                log "ERROR: Snap file is too small (<1KB): $_snap_file"
-                return 1
-            }
-            
-            [ "$_file_size" -lt 2147483648 ] || {
-                log "WARN: Snap file is unusually large (>2GB): $_snap_file"
-            }
-        fi
-    fi
-    
-    # Check if it's a SquashFS file (snap files are SquashFS archives)
-    # SquashFS magic number is 'hsqs' (0x73717368) at offset 0
-    if command -v hexdump >/dev/null 2>&1; then
-        _magic=$(hexdump -C "$_snap_file" 2>/dev/null | head -1 | cut -d' ' -f2-5 | tr -d ' ')
-        if [ -n "$_magic" ] && [ "$_magic" != "68737173" ]; then
-            log "WARN: Snap file does not appear to be SquashFS format: $_snap_file"
-            # Don't fail here as snapd will do final validation
-        fi
-    fi
-    
-    log "VALIDATION: Basic snap file validation passed: $_snap_file"
-    return 0
-}
-
-# ack_assert acknowledges an assertion file after validation
-# RESOLVED TODO: Now validates assertion contains required components
+# ack_assert acknowledges an assertion file
+# ack_assert does not verify if the assertion type is of a valid kind
 ack_assert() {
     _assert="$1"
 
-    # Validate assertion file contains required components
-    if ! validate_assertion_file "$_assert"; then
-        log "ERROR: ASSERTION VALIDATION: $_assert failed validation"
-        return 1
-    fi
+    # TODO: check that the provided assertion meets the minimum requirements to
+    # be a valid assertion accompanying a snap. It is expected that a valid
+    # assertion file has an account-key, snap-declaration, and snap-revision
+    # https://ubuntu.com/core/docs/reference/assertions/account-key
+    # https://ubuntu.com/core/docs/reference/assertions/snap-declaration
+    # https://ubuntu.com/core/docs/reference/assertions/snap-revision
 
-    # Acknowledge the assertion
+    # Ack the assert
     _response="$(rest_call ack "$_assert")"
 
     if ! echo "$_response" | grep -Iq '"status":"OK"'; then
@@ -182,18 +83,21 @@ ack_assert() {
     log "ACKNOWLEDGE RESULT: $_assert acknowledged"
 }
 
-# install_snap installs a snap file after validation
-# RESOLVED TODO: Now validates snap file meets minimum requirements
+# install_snap installs a snap file
+# install_snap does not verify if the snap file is of a valid kind
 install_snap() {
     _snap="$1"
 
-    # Validate snap file before attempting installation
-    if ! validate_snap_file "$_snap"; then
-        log "ERROR: SNAP VALIDATION: $_snap failed validation"
-        return 1
-    fi
+    # TODO: check that the provided snap meets the minimum requirements to be a
+    # valid snap file. There is no magic number associated with either a
+    # SquashFS or a snap, and the low-hanging fruit for verification are
+    # relatively weak. For instance, we can verify that the size of the file
+    # matches the size listed in the corresponding assertion
+    # Theoretically there is no harm that can be done if the snap file is
+    # invalid; snapd will ensure it matches the corresponding assertion and if
+    # it doesn't, won't install it
 
-    # Install the snap
+    # install the snap
     _response="$(rest_call install "$_snap")"
 
     if ! echo "$_response" | grep -Iq '"status":"Accepted"'; then
@@ -254,9 +158,6 @@ eject_device() {
 # correspondingly named snap file in the same directory. It acknowledges the
 # assertion, installs the snap, and attempts to set that snap to track
 # latest/stable
-
-# Updated process_mounts() to use the new mklog() approach
-# This demonstrates how to use mklog() without subshells
 process_mounts() {
     _watch_file="$1"
 
@@ -265,14 +166,17 @@ process_mounts() {
         # Make sure the mount actually exists
         [ -d "$_mount_point" ] || continue
 
-        # NEW APPROACH: Capture the log file path directly from mklog()
-        # No subshell needed, no global variable issues
+        # TODO: investigate how to further extend or scope mklog()
+        # For instance, instead of spawning a subshell we could do:
+        #   mklog $_log_file
+        #   :> $_log_file; readonly $_log_file
+        #shellcheck disable=2119
         _log_file="$(mklog)"
 
         log "Mountpoint is ${_mount_point}."
 
-        # Rest of the function continues as before...
-        _asserts=$(find "$_mount_point" -name "*.assert" -type f)
+        # Skip mounts that don't contain any asserts
+        _asserts=$(find "$_mount_point" -name \*.assert)
         [ -n "$_asserts" ] || {
             log "WARN: No assertions found."
             eject_device
@@ -280,9 +184,7 @@ process_mounts() {
         }
 
         # Loop through each assert and, for those with a corresponding snap, install
-        echo "$_asserts" | while read -r _assert; do
-            [ -n "$_assert" ] || continue
-            
+        for _assert in $_asserts; do
             # Make sure a corresponding snap exists
             [ -e "${_assert%%.assert}.snap" ] || {
                 log "WARN: ${_assert%%.assert}.snap not found for $_assert"
