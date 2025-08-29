@@ -59,39 +59,25 @@ try_mount() {
 # cleanup acts to ensure this daemon remains tidy
 cleanup () {
     _exit_status=$?
+
     sync
-    
-    # Use find instead of ls for better reliability and portability
-    # This handles filenames with spaces and special characters properly
-    if [ -d "$MOUNT_DIR" ]; then
-        # Find all directories in MOUNT_DIR (these are our UUID mount points)
-        # Use -print0 and read -d '' to handle filenames with spaces/newlines
-        find "$MOUNT_DIR" -mindepth 1 -maxdepth 1 -type d -print0 | \
-        while IFS= read -r -d '' _mount_path; do
-            _uuid=$(basename "$_mount_path")
-            
-            # Attempt to unmount the device
-            if umount "$_mount_path" 2>/dev/null; then
-                echo "Unmounted: $_mount_path"
-            else
-                echo "WARN: Failed to unmount $_mount_path"
-                # Continue trying to clean up other mounts
-            fi
-            
-            # Remove the mount directory
-            if rmdir "$_mount_path" 2>/dev/null; then
-                echo "Removed directory: $_mount_path"
-            else
-                echo "WARN: Failed to remove directory $_mount_path"
-            fi
+
+    # TODO: parsing ls is potentially unreliable. find is an alternative but the
+    # solution is potentially nonportable. Find a cleaner way to determine
+    # mountpoints.
+    #shellcheck disable=2012
+    _uuids="$(ls -1 "$MOUNT_DIR" | tr '\n' :)"
+    [ -z "$_uuids" ] || {
+        # Unmount everthing
+        IFS=:
+        for _uuid in $_uuids; do
+            umount "${MOUNT_DIR}/${_uuid}" || continue
+            rmdir "${MOUNT_DIR}/${_uuid}"
         done
-        
-        # Remove the main mount directory if it's empty
-        rmdir "$MOUNT_DIR" 2>/dev/null || {
-            echo "WARN: Could not remove mount directory $MOUNT_DIR (may not be empty)"
-        }
-    fi
-    
+    }
+
+    rmdir "$MOUNT_DIR"
+
     # Exit with 0 if we're interrupted with INT or TERM
     case $_exit_status in 130|143) exit 0; esac
 }
