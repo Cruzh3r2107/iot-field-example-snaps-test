@@ -57,40 +57,29 @@ try_mount() {
 }
 
 # cleanup acts to ensure this daemon remains tidy
-cleanup () {
+cleanup() {
     _exit_status=$?
+
     sync
     
-    # Use find instead of ls for better reliability and portability
-    # This handles filenames with spaces and special characters properly
-    if [ -d "$MOUNT_DIR" ]; then
-        # Find all directories in MOUNT_DIR (these are our UUID mount points)
-        # Use -print0 and read -d '' to handle filenames with spaces/newlines
-        find "$MOUNT_DIR" -mindepth 1 -maxdepth 1 -type d -print0 | \
-        while IFS= read -r -d '' _mount_path; do
+    # Check if MOUNT_DIR exists and continue with our life
+    [ ! -e "$MOUNT_DIR" ] || {
+        for _mount_path in "$MOUNT_DIR"/*; do
+            # Skip if glob didn't match anything
+            [ -e "$_mount_path" ] || continue
+            
             _uuid=$(basename "$_mount_path")
             
             # Attempt to unmount the device
-            if umount "$_mount_path" 2>/dev/null; then
-                echo "Unmounted: $_mount_path"
-            else
-                echo "WARN: Failed to unmount $_mount_path"
-                # Continue trying to clean up other mounts
-            fi
+            umount "$_mount_path" 2>/dev/null && echo "Unmounted: $_mount_path" || echo "WARN: Failed to unmount $_mount_path"
             
             # Remove the mount directory
-            if rmdir "$_mount_path" 2>/dev/null; then
-                echo "Removed directory: $_mount_path"
-            else
-                echo "WARN: Failed to remove directory $_mount_path"
-            fi
+            rmdir "$_mount_path" 2>/dev/null && echo "Removed directory: $_mount_path" || echo "WARN: Failed to remove directory $_mount_path"
         done
         
-        # Remove the main mount directory if it's empty
-        rmdir "$MOUNT_DIR" 2>/dev/null || {
-            echo "WARN: Could not remove mount directory $MOUNT_DIR (may not be empty)"
-        }
-    fi
+        # Remove the main mount directory
+        rmdir "$MOUNT_DIR" 2>/dev/null || echo "WARN: Could not remove mount directory $MOUNT_DIR (may not be empty)"
+    }
     
     # Exit with 0 if we're interrupted with INT or TERM
     case $_exit_status in 130|143) exit 0; esac

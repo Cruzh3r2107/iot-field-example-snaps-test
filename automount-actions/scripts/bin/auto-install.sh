@@ -2,14 +2,12 @@
 
 # mklog ensures that a log file exists
 mklog() {
-    _log_dir="${1:-"${LOG_DIR:="$(mktemp -d)"}"}"
+    _log_dir="${1:-"$LOG_DIR"}"
 
     [ -d "$_log_dir" ] || mkdir -p "$_log_dir"
 
-    # FIXED: Renamed _log_path to _log_file_path for clarity
-    # This variable points to a .log file, so the name should reflect that
-    _log_file_path="${_log_dir}/$(date -Iseconds | tr ':' '-').log"
-    : >| "$_log_file_path" && echo "$_log_file_path"
+    _log_file="${_log_dir}/$(date '+%Y-%m-%d_%H-%M-%S').log"
+    : >| "$_log_file" && echo "$_log_file"
 }
 
 # log to SNAP_COMMON and TTY
@@ -76,38 +74,41 @@ validate_assertion_file() {
         return 1
     }
     
-    # Check for required assertion types
-    _has_account_key=false
-    _has_snap_declaration=false  
-    _has_snap_revision=false
+    # Use permission-style integer flags to track which assertions are found
+    # This allows us to determine exactly which ones are missing based on the sum
+    _has_account_key=0
+    _has_snap_declaration=0
+    _has_snap_revision=0
     
     # Read the file and look for the required assertion types
-    while read -r _line; do
-        case "$_line" in
-            "type: account-key"*)     _has_account_key=true ;;
-            "type: snap-declaration"*) _has_snap_declaration=true ;;
-            "type: snap-revision"*)   _has_snap_revision=true ;;
+    # Parse key-value pairs properly by splitting on ': '
+    while IFS=': ' read -r _key _val; do
+        [ "$_key" = "type" ] || continue
+        case "$_val" in
+            "account-key")     _has_account_key=1     ;;
+            "snap-declaration") _has_snap_declaration=2 ;;
+            "snap-revision")   _has_snap_revision=4   ;;
         esac
     done < "$_assert_file"
     
-    # Verify all three required assertion types are present
-    if ! $_has_account_key; then
-        log "WARN: Assertion file missing account-key: $_assert_file"
-        return 1
-    fi
+    # Calculate sum to determine which assertions are present
+    _sum=$(( _has_account_key + _has_snap_declaration + _has_snap_revision ))
     
-    if ! $_has_snap_declaration; then
-        log "WARN: Assertion file missing snap-declaration: $_assert_file"
-        return 1
-    fi
+    # If sum is 7 (1+2+4), all assertions are present
+    [ "$_sum" -eq 7 ] && {
+        log "VALIDATION: Assertion file contains all required types: $_assert_file"
+        return 0
+    }
     
-    if ! $_has_snap_revision; then
-        log "WARN: Assertion file missing snap-revision: $_assert_file"
-        return 1
-    fi
+    # Build missing assertions message based on sum
+    _missing=""
+    [ $(( _sum & 1 )) -eq 0 ] && _missing="${_missing} account-key"
+    [ $(( _sum & 2 )) -eq 0 ] && _missing="${_missing} snap-declaration" 
+    [ $(( _sum & 4 )) -eq 0 ] && _missing="${_missing} snap-revision"
     
-    log "VALIDATION: Assertion file contains all required types: $_assert_file"
-    return 0
+    log "WARN: Assertion file missing${_missing}: $_assert_file"
+    
+    return 1
 }
 
 # validate_snap_file performs basic validation on snap files
@@ -147,13 +148,12 @@ validate_snap_file() {
     fi
     
     # Check if it's a SquashFS file (snap files are SquashFS archives)
-    # SquashFS magic number is 'hsqs' (0x73717368) at offset 0
-    if command -v hexdump >/dev/null 2>&1; then
-        _magic=$(hexdump -C "$_snap_file" 2>/dev/null | head -1 | cut -d' ' -f2-5 | tr -d ' ')
-        if [ -n "$_magic" ] && [ "$_magic" != "68737173" ]; then
-            log "WARN: Snap file does not appear to be SquashFS format: $_snap_file"
-            # Don't fail here as snapd will do final validation
-        fi
+    # SquashFS magic number is 'hsqs' at offset 0
+    # Use dd to read first 4 bytes, redirect stderr to avoid noise
+    _magic=$(dd if="$_snap_file" bs=4 count=1 2>/dev/null)
+    if [ -n "$_magic" ] && [ "$_magic" != "hsqs" ]; then
+        log "WARN: Snap file does not appear to be SquashFS format: $_snap_file"
+        # Don't fail here as snapd will do final validation
     fi
     
     log "VALIDATION: Basic snap file validation passed: $_snap_file"
@@ -161,7 +161,6 @@ validate_snap_file() {
 }
 
 # ack_assert acknowledges an assertion file after validation
-# RESOLVED TODO: Now validates assertion contains required components
 ack_assert() {
     _assert="$1"
 
@@ -183,7 +182,6 @@ ack_assert() {
 }
 
 # install_snap installs a snap file after validation
-# RESOLVED TODO: Now validates snap file meets minimum requirements
 install_snap() {
     _snap="$1"
 
@@ -253,10 +251,8 @@ eject_device() {
 # process_mounts verifies that for each assertion on a disk there is a
 # correspondingly named snap file in the same directory. It acknowledges the
 # assertion, installs the snap, and attempts to set that snap to track
-# latest/stable
 
-# Updated process_mounts() to use the new mklog() approach
-# This demonstrates how to use mklog() without subshells
+# Updated process_mounts() - log file now created in main()
 process_mounts() {
     _watch_file="$1"
 
@@ -264,10 +260,6 @@ process_mounts() {
 
         # Make sure the mount actually exists
         [ -d "$_mount_point" ] || continue
-
-        # NEW APPROACH: Capture the log file path directly from mklog()
-        # No subshell needed, no global variable issues
-        _log_file="$(mklog)"
 
         log "Mountpoint is ${_mount_point}."
 
@@ -317,6 +309,11 @@ main() {
     # Globally set exit on error, no unset variables
     set -eu
 
+    : "${LOG_DIR:="$(mktemp -d)"}"; readonly LOG_DIR
+    
+    _log_file="$(mklog)"
+    readonly _log_file
+    
     : "${WATCH_FILE:=/tmp/mounts.fifo}"; readonly WATCH_FILE
     [ -p "$WATCH_FILE" ] || mkfifo "$WATCH_FILE"
 
