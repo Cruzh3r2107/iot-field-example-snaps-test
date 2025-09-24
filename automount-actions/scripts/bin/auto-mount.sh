@@ -47,7 +47,7 @@ try_mount() {
     mkdir -p "$_target"
     if ! mount -o "$OPTIONS" -t "$FSTYPE" "$_source" "$_target"; then
         echo "WARN: Could not mount ${_source} to ${_target}"
-        rmdir -p "$_target"
+        rmdir "$_target"
         return 0
     fi
 
@@ -64,21 +64,26 @@ cleanup() {
     
     # Check if MOUNT_DIR exists and continue with our life
     [ ! -e "$MOUNT_DIR" ] || {
-        for _mount_path in "$MOUNT_DIR"/*; do
+        for _mount_path in "$MOUNT_DIR/"*; do
             # Skip if glob didn't match anything
             [ -e "$_mount_path" ] || continue
             
             _uuid=$(basename "$_mount_path")
             
             # Attempt to unmount the device
-            umount "$_mount_path" 2>/dev/null && echo "Unmounted: $_mount_path" || echo "WARN: Failed to unmount $_mount_path"
+            umount "$_mount_path" 2>/dev/null && 
+		    echo "Unmounted: $_mount_path" || 
+		    echo "WARN: Failed to unmount $_mount_path"
             
             # Remove the mount directory
-            rmdir "$_mount_path" 2>/dev/null && echo "Removed directory: $_mount_path" || echo "WARN: Failed to remove directory $_mount_path"
+            rmdir "$_mount_path" 2>/dev/null && 
+		    echo "Removed directory: $_mount_path" || 
+		    echo "WARN: Failed to remove directory $_mount_path"
         done
         
         # Remove the main mount directory
-        rmdir "$MOUNT_DIR" 2>/dev/null || echo "WARN: Could not remove mount directory $MOUNT_DIR (may not be empty)"
+        rmdir "$MOUNT_DIR" 2>/dev/null || 
+		echo "WARN: Could not remove mount directory $MOUNT_DIR (may not be empty)"
     }
     
     # Exit with 0 if we're interrupted with INT or TERM

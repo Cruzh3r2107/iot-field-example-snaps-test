@@ -2,8 +2,6 @@
 
 # mklog ensures that a log file exists
 mklog() {
-    _log_dir="${1:-"$LOG_DIR"}"
-
     [ -d "$_log_dir" ] || mkdir -p "$_log_dir"
 
     _log_file="${_log_dir}/$(date '+%Y-%m-%d_%H-%M-%S').log"
@@ -57,74 +55,69 @@ rest_call() {
     esac
 }
 
+# enum {
+readonly TYPE_ACCT_KEY=$(( 1 << 0 ))
+readonly TYPE_SNAP_DEC=$(( 1 << 1 ))
+readonly TYPE_SNAP_REV=$(( 1 << 2 ))
+# }
+
+add_type() {
+    bitfield=$(( bitfield | $1 ))
+}
+
+has_type() {
+    [ $(( bitfield & $1 )) -ne 0 ]
+}
+
 # validate_assertion_file checks that assertion contains required components
 # A valid assertion file must contain account-key, snap-declaration, and snap-revision
 validate_assertion_file() {
     _assert_file="$1"
     
-    # Check if file exists and is readable
-    [ -r "$_assert_file" ] || {
-        log "ERROR: Cannot read assertion file: $_assert_file"
+    # Check if file is readable and not empty
+    { [ -r "$_assert_file" ] && [ -s "$_assert_file" ]; } || {
+        log "ERROR: Assertion file empty or unreadable: $_assert_file"
         return 1
     }
     
-    # Check file is not empty
-    [ -s "$_assert_file" ] || {
-        log "ERROR: Assertion file is empty: $_assert_file"
-        return 1
-    }
-    
-    # Use permission-style integer flags to track which assertions are found
-    # This allows us to determine exactly which ones are missing based on the sum
-    _has_account_key=0
-    _has_snap_declaration=0
-    _has_snap_revision=0
+    # Initialize bitfield to track found assertion types
+    bitfield=0
     
     # Read the file and look for the required assertion types
     # Parse key-value pairs properly by splitting on ': '
     while IFS=': ' read -r _key _val; do
         [ "$_key" = "type" ] || continue
         case "$_val" in
-            "account-key")     _has_account_key=1     ;;
-            "snap-declaration") _has_snap_declaration=2 ;;
-            "snap-revision")   _has_snap_revision=4   ;;
+            "account-key")     add_type $TYPE_ACCT_KEY ;;
+            "snap-declaration") add_type $TYPE_SNAP_DEC ;;
+            "snap-revision")   add_type $TYPE_SNAP_REV ;;
         esac
     done < "$_assert_file"
     
-    # Calculate sum to determine which assertions are present
-    _sum=$(( _has_account_key + _has_snap_declaration + _has_snap_revision ))
-    
-    # If sum is 7 (1+2+4), all assertions are present
-    [ "$_sum" -eq 7 ] && {
+    # Check if all required types are present (bitfield should equal 7)
+    [ "$bitfield" -eq 7 ] && {
         log "VALIDATION: Assertion file contains all required types: $_assert_file"
         return 0
     }
     
-    # Build missing assertions message based on sum
+    # Build missing assertions message using bitfield operations
     _missing=""
-    [ $(( _sum & 1 )) -eq 0 ] && _missing="${_missing} account-key"
-    [ $(( _sum & 2 )) -eq 0 ] && _missing="${_missing} snap-declaration" 
-    [ $(( _sum & 4 )) -eq 0 ] && _missing="${_missing} snap-revision"
+    has_type $TYPE_ACCT_KEY || _missing="${_missing} account-key"
+    has_type $TYPE_SNAP_DEC || _missing="${_missing} snap-declaration"
+    has_type $TYPE_SNAP_REV || _missing="${_missing} snap-revision"
     
     log "WARN: Assertion file missing${_missing}: $_assert_file"
-    
     return 1
 }
 
-# validate_snap_file performs basic validation on snap files
+# validate_snap_file performs basic validation on snap files  
 # Checks file accessibility, size, and SquashFS format when possible
 validate_snap_file() {
     _snap_file="$1"
     
-    # Check if file exists and is readable
-    [ -r "$_snap_file" ] || {
-        log "ERROR: Cannot read snap file: $_snap_file"
-        return 1
-    }
-    
-    # Check if file is not empty
-    [ -s "$_snap_file" ] || {
-        log "ERROR: Snap file is empty: $_snap_file"
+    # Check if file is readable and not empty
+    { [ -r "$_snap_file" ] && [ -s "$_snap_file" ]; } || {
+        log "ERROR: Snap file empty or unreadable: $_snap_file"
         return 1
     }
     
@@ -151,10 +144,12 @@ validate_snap_file() {
     # SquashFS magic number is 'hsqs' at offset 0
     # Use dd to read first 4 bytes, redirect stderr to avoid noise
     _magic=$(dd if="$_snap_file" bs=4 count=1 2>/dev/null)
-    if [ -n "$_magic" ] && [ "$_magic" != "hsqs" ]; then
+    
+    # Invert logic to avoid set -e issues: check if it's NOT hsqs, then warn
+    [ "$_magic" = "hsqs" ] || {
         log "WARN: Snap file does not appear to be SquashFS format: $_snap_file"
         # Don't fail here as snapd will do final validation
-    fi
+    }
     
     log "VALIDATION: Basic snap file validation passed: $_snap_file"
     return 0
@@ -251,7 +246,6 @@ eject_device() {
 # process_mounts verifies that for each assertion on a disk there is a
 # correspondingly named snap file in the same directory. It acknowledges the
 # assertion, installs the snap, and attempts to set that snap to track
-
 # Updated process_mounts() - log file now created in main()
 process_mounts() {
     _watch_file="$1"
@@ -309,13 +303,14 @@ main() {
     # Globally set exit on error, no unset variables
     set -eu
 
-    : "${LOG_DIR:="$(mktemp -d)"}"; readonly LOG_DIR
+    : "${_log_dir:="$(mktemp -d)"}"; readonly _log_dir
     
-    _log_file="$(mklog)"
-    readonly _log_file
+    #creates a log file once in main() instead of in process_mounts() 
+    mklog "$_log_dir"; readonly _log_file
     
     : "${WATCH_FILE:=/tmp/mounts.fifo}"; readonly WATCH_FILE
-    [ -p "$WATCH_FILE" ] || mkfifo "$WATCH_FILE"
+    ! [ -p "${WATCH_FILE}" ] || rm -f "${WATCH_FILE}"
+    mkfifo "${WATCH_FILE}"
 
     trap exit    INT TERM
     trap cleanup EXIT
